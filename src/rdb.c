@@ -21,6 +21,9 @@ int rdbSaveType(rio *rdb, unsigned char type) {
     return rdbWriteRaw(rdb,&type,1);
 }
 
+/* Load a "type" in RDB format, that is a one byte unsigned integer.
+ * This function is not only used to load object types, but also special
+ * "types" like the end-of-file type, the EXPIRE type, and so forth. */
 int rdbLoadType(rio *rdb) {
     unsigned char type;
     if (rioRead(rdb,&type,1) == 0) return -1;
@@ -433,7 +436,8 @@ int rdbSaveObjectType(rio *rdb, robj *o) {
     return -1; /* avoid warning */
 }
 
-/* Load object type. Return -1 when the byte doesn't contain an object type. */
+/* Use rdbLoadType() to load a TYPE in RDB format, but returns -1 if the
+ * type is not specifically a valid Object Type. */
 int rdbLoadObjectType(rio *rdb) {
     int type;
     if ((type = rdbLoadType(rdb)) == -1) return -1;
@@ -708,6 +712,7 @@ int rdbSaveBackground(char *filename) {
             return REDIS_ERR;
         }
         redisLog(REDIS_NOTICE,"Background saving started by pid %d",childpid);
+        server.rdb_save_time_start = time(NULL);
         server.rdb_child_pid = childpid;
         updateDictResizePolicy();
         return REDIS_OK;
@@ -1152,6 +1157,8 @@ void backgroundSaveDoneHandler(int exitcode, int bysignal) {
         server.lastbgsave_status = REDIS_ERR;
     }
     server.rdb_child_pid = -1;
+    server.rdb_save_time_last = time(NULL)-server.rdb_save_time_start;
+    server.rdb_save_time_start = -1;
     /* Possibly there are slaves waiting for a BGSAVE in order to be served
      * (the first stage of SYNC is a bulk transfer of dump.rdb) */
     updateSlavesWaitingBgsave(exitcode == 0 ? REDIS_OK : REDIS_ERR);

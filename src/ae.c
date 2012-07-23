@@ -44,13 +44,17 @@
 
 /* Include the best multiplexing layer supported by this system.
  * The following should be ordered by performances, descending. */
-#ifdef HAVE_EPOLL
-#include "ae_epoll.c"
+#ifdef HAVE_EVPORT
+#include "ae_evport.c"
 #else
-    #ifdef HAVE_KQUEUE
-    #include "ae_kqueue.c"
+    #ifdef HAVE_EPOLL
+    #include "ae_epoll.c"
     #else
-    #include "ae_select.c"
+        #ifdef HAVE_KQUEUE
+        #include "ae_kqueue.c"
+        #else
+        #include "ae_select.c"
+        #endif
     #endif
 #endif
 
@@ -381,6 +385,8 @@ int aeWait(int fd, int mask, long long milliseconds) {
     if ((retval = poll(&pfd, 1, milliseconds))== 1) {
         if (pfd.revents & POLLIN) retmask |= AE_READABLE;
         if (pfd.revents & POLLOUT) retmask |= AE_WRITABLE;
+	if (pfd.revents & POLLERR) retmask |= AE_WRITABLE;
+        if (pfd.revents & POLLHUP) retmask |= AE_WRITABLE;
         return retmask;
     } else {
         return retval;

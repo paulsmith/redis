@@ -264,6 +264,10 @@ void loadServerConfigFromString(char *config) {
         {
             server.aof_rewrite_min_size = memtoll(argv[1],NULL);
         } else if (!strcasecmp(argv[0],"requirepass") && argc == 2) {
+            if (strlen(argv[1]) > REDIS_AUTHPASS_MAX_LEN) {
+                err = "Password is longer than REDIS_AUTHPASS_MAX_LEN";
+                goto loaderr;
+            }
             server.requirepass = zstrdup(argv[1]);
         } else if (!strcasecmp(argv[0],"pidfile") && argc == 2) {
             zfree(server.pidfile);
@@ -350,6 +354,17 @@ void loadServerConfigFromString(char *config) {
             if ((server.stop_writes_on_bgsave_err = yesnotoi(argv[1])) == -1) {
                 err = "argument must be 'yes' or 'no'"; goto loaderr;
             }
+        } else if (!strcasecmp(argv[0],"sentinel")) {
+            /* argc == 1 is handled by main() as we need to enter the sentinel
+             * mode ASAP. */
+            if (argc != 1) {
+                if (!server.sentinel_mode) {
+                    err = "sentinel directive while not in sentinel mode";
+                    goto loaderr;
+                }
+                err = sentinelHandleConfiguration(argv+1,argc-1);
+                if (err) goto loaderr;
+            }
         } else {
             err = "Bad directive or wrong number of arguments"; goto loaderr;
         }
@@ -418,6 +433,7 @@ void configSetCommand(redisClient *c) {
         zfree(server.rdb_filename);
         server.rdb_filename = zstrdup(o->ptr);
     } else if (!strcasecmp(c->argv[2]->ptr,"requirepass")) {
+        if (sdslen(o->ptr) > REDIS_AUTHPASS_MAX_LEN) goto badfmt;
         zfree(server.requirepass);
         server.requirepass = ((char*)o->ptr)[0] ? zstrdup(o->ptr) : NULL;
     } else if (!strcasecmp(c->argv[2]->ptr,"masterauth")) {

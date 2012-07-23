@@ -686,6 +686,30 @@ void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
 }
 #endif /* HAVE_BACKTRACE */
 
+/* ==================== Logging functions for debugging ===================== */
+
+void redisLogHexDump(int level, char *descr, void *value, size_t len) {
+    char buf[65], *b;
+    unsigned char *v = value;
+    char charset[] = "0123456789abcdef";
+
+    redisLog(level,"%s (hexdump):", descr);
+    b = buf;
+    while(len) {
+        b[0] = charset[(*v)>>4];
+        b[1] = charset[(*v)&0xf];
+        b[2] = '\0';
+        b += 2;
+        len--;
+        v++;
+        if (b-buf == 64 || len == 0) {
+            redisLogRaw(level|REDIS_LOG_RAW,buf);
+            b = buf;
+        }
+    }
+    redisLogRaw(level|REDIS_LOG_RAW,"\n");
+}
+
 /* =========================== Software Watchdog ============================ */
 #include <sys/time.h>
 
@@ -722,6 +746,8 @@ void watchdogScheduleSignal(int period) {
 
 /* Enable the software watchdong with the specified period in milliseconds. */
 void enableWatchdog(int period) {
+    int min_period;
+
     if (server.watchdog_period == 0) {
         struct sigaction act;
 
@@ -732,7 +758,11 @@ void enableWatchdog(int period) {
         act.sa_sigaction = watchdogSignalHandler;
         sigaction(SIGALRM, &act, NULL);
     }
-    if (period < 200) period = 200; /* We don't accept periods < 200 ms. */
+    /* If the configured period is smaller than twice the timer period, it is
+     * too short for the software watchdog to work reliably. Fix it now
+     * if needed. */
+    min_period = (1000/REDIS_HZ)*2;
+    if (period < min_period) period = min_period;
     watchdogScheduleSignal(period); /* Adjust the current timer. */
     server.watchdog_period = period;
 }

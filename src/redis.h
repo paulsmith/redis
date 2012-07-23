@@ -38,11 +38,13 @@
 #define REDIS_ERR               -1
 
 /* Static server configuration */
+#define REDIS_HZ                100     /* Time interrupt calls/sec. */
 #define REDIS_SERVERPORT        6379    /* TCP port */
 #define REDIS_MAXIDLETIME       0       /* default client timeout: infinite */
 #define REDIS_DEFAULT_DBNUM     16
 #define REDIS_CONFIGLINE_MAX    1024
 #define REDIS_EXPIRELOOKUPS_PER_CRON    10 /* lookup 10 expires per loop */
+#define REDIS_EXPIRELOOKUPS_TIME_PERC   25 /* CPU max % for keys collection */
 #define REDIS_MAX_WRITE_PER_EVENT (1024*64)
 #define REDIS_SHARED_SELECT_CMDS 10
 #define REDIS_SHARED_INTEGERS 10000
@@ -54,6 +56,7 @@
 #define REDIS_SLOWLOG_LOG_SLOWER_THAN 10000
 #define REDIS_SLOWLOG_MAX_LEN 128
 #define REDIS_MAX_CLIENTS 10000
+#define REDIS_AUTHPASS_MAX_LEN 512
 
 #define REDIS_REPL_TIMEOUT 60
 #define REDIS_REPL_PING_SLAVE_PERIOD 10
@@ -82,6 +85,8 @@
 #define REDIS_CMD_NOSCRIPT  64              /* "s" flag */
 #define REDIS_CMD_RANDOM 128                /* "R" flag */
 #define REDIS_CMD_SORT_FOR_SCRIPT 256       /* "S" flag */
+#define REDIS_CMD_LOADING 512               /* "l" flag */
+#define REDIS_CMD_STALE 1024                /* "t" flag */
 
 /* Object types */
 #define REDIS_STRING 0
@@ -252,6 +257,11 @@
 #define REDIS_PROPAGATE_AOF 1
 #define REDIS_PROPAGATE_REPL 2
 
+/* Using the following macro you can run code inside serverCron() with the
+ * specified period, specified in milliseconds.
+ * The actual resolution depends on REDIS_HZ. */
+#define run_with_period(_ms_) if (!(server.cronloops%((_ms_)/(1000/REDIS_HZ))))
+
 /* We can print the stacktrace, so our assert is defined this way: */
 #define redisAssertWithInfo(_c,_o,_e) ((_e)?(void)0 : (_redisAssertWithInfo(_c,_o,#_e,__FILE__,__LINE__),_exit(1)))
 #define redisAssert(_e) ((_e)?(void)0 : (_redisAssert(#_e,__FILE__,__LINE__),_exit(1)))
@@ -343,6 +353,7 @@ typedef struct redisClient {
     int repldbfd;           /* replication DB file descriptor */
     long repldboff;         /* replication DB file offset */
     off_t repldbsize;       /* replication DB file size */
+    int slave_listening_port; /* As configured with: SLAVECONF listening-port */
     multiState mstate;      /* MULTI/EXEC state */
     blockingState bpop;   /* blocking state */
     list *io_keys;          /* Keys this client is waiting to be loaded from the
@@ -573,6 +584,7 @@ struct redisServer {
     int arch_bits;              /* 32 or 64 depending on sizeof(long) */
     int cronloops;              /* Number of times the cron function run */
     char runid[REDIS_RUN_ID_SIZE+1];  /* ID always different at every exec. */
+    int sentinel_mode;          /* True if this instance is a Sentinel. */
     /* Networking */
     int port;                   /* TCP listening port */
     char *bindaddr;             /* Bind address or NULL */
@@ -632,12 +644,14 @@ struct redisServer {
     off_t aof_current_size;         /* AOF current size. */
     int aof_rewrite_scheduled;      /* Rewrite once BGSAVE terminates. */
     pid_t aof_child_pid;            /* PID if rewriting process */
-    sds aof_rewrite_buf; /* buffer taken by parent during oppend only rewrite */
+    list *aof_rewrite_buf_blocks;   /* Hold changes during an AOF rewrite. */
     sds aof_buf;      /* AOF buffer, written before entering the event loop */
     int aof_fd;       /* File descriptor of currently selected AOF file */
     int aof_selected_db; /* Currently selected DB in AOF */
     time_t aof_flush_postponed_start; /* UNIX time of postponed AOF flush */
     time_t aof_last_fsync;            /* UNIX time of last fsync() */
+    time_t aof_rewrite_time_last;   /* Time used by last AOF rewrite run. */
+    time_t aof_rewrite_time_start;  /* Current AOF rewrite start time. */
     unsigned long aof_delayed_fsync;  /* delayed AOF fsync() counter */
     /* RDB persistence */
     long long dirty;                /* Changes to DB from the last save */
@@ -649,6 +663,8 @@ struct redisServer {
     int rdb_compression;            /* Use compression in RDB? */
     int rdb_checksum;               /* Use RDB checksum? */
     time_t lastsave;                /* Unix time of last save succeeede */
+    time_t rdb_save_time_last;      /* Time used by last RDB save run. */
+    time_t rdb_save_time_start;     /* Current RDB save start time. */
     int lastbgsave_status;          /* REDIS_OK or REDIS_ERR */
     int stop_writes_on_bgsave_err;  /* Don't allow writes if can't BGSAVE */
     /* Propagation of commands in AOF / replication */
@@ -975,6 +991,8 @@ int loadAppendOnlyFile(char *filename);
 void stopAppendOnly(void);
 int startAppendOnly(void);
 void backgroundRewriteDoneHandler(int exitcode, int bysignal);
+void aofRewriteBufferReset(void);
+unsigned long aofRewriteBufferSize(void);
 
 /* Sorted sets data type */
 
@@ -1102,6 +1120,12 @@ int clusterAddNode(clusterNode *node);
 void clusterCron(void);
 clusterNode *getNodeByQuery(redisClient *c, struct redisCommand *cmd, robj **argv, int argc, int *hashslot, int *ask);
 void clusterPropagatePublish(robj *channel, robj *message);
+
+/* Sentinel */
+void initSentinelConfig(void);
+void initSentinel(void);
+void sentinelTimer(void);
+char *sentinelHandleConfiguration(char **argv, int argc);
 
 /* Scripting */
 void scriptingInit(void);
@@ -1245,6 +1269,9 @@ void evalCommand(redisClient *c);
 void evalShaCommand(redisClient *c);
 void scriptCommand(redisClient *c);
 void timeCommand(redisClient *c);
+void bitopCommand(redisClient *c);
+void bitcountCommand(redisClient *c);
+void replconfCommand(redisClient *c);
 
 #if defined(__GNUC__)
 void *calloc(size_t count, size_t size) __attribute__ ((deprecated));
@@ -1264,4 +1291,11 @@ sds genRedisInfoString(char *section);
 void enableWatchdog(int period);
 void disableWatchdog(void);
 void watchdogScheduleSignal(int period);
+void redisLogHexDump(int level, char *descr, void *value, size_t len);
+
+#define redisDebug(fmt, ...) \
+    printf("DEBUG %s:%d > " fmt "\n", __FILE__, __LINE__, __VA_ARGS__)
+#define redisDebugMark() \
+    printf("-- MARK %s:%d --\n", __FILE__, __LINE__)
+
 #endif

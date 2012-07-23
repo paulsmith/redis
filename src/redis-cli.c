@@ -35,6 +35,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <time.h>
 #include <ctype.h>
 #include <errno.h>
 #include <sys/stat.h>
@@ -711,17 +712,17 @@ static void usage() {
 "  -a <password>    Password to use when connecting to the server\n"
 "  -r <repeat>      Execute specified command N times\n"
 "  -i <interval>    When -r is used, waits <interval> seconds per command.\n"
-"                   It is possible to specify sub-second times like -i 0.1.\n"
+"                   It is possible to specify sub-second times like -i 0.1\n"
 "  -n <db>          Database number\n"
 "  -x               Read last argument from STDIN\n"
 "  -d <delimiter>   Multi-bulk delimiter in for raw formatting (default: \\n)\n"
 "  -c               Enable cluster mode (follow -ASK and -MOVED redirections)\n"
 "  --raw            Use raw formatting for replies (default when STDOUT is not a tty)\n"
-"  --latency        Enter a special mode continuously sampling latency.\n"
-"  --slave          Simulate a slave showing commands received from the master.\n"
-"  --pipe           Transfer raw Redis protocol from stdin to server.\n"
-"  --bigkeys        Sample Redis keys looking for big keys.\n"
-"  --eval <file>    Send an EVAL command using the Lua script at <file>.\n"
+"  --latency        Enter a special mode continuously sampling latency\n"
+"  --slave          Simulate a slave showing commands received from the master\n"
+"  --pipe           Transfer raw Redis protocol from stdin to server\n"
+"  --bigkeys        Sample Redis keys looking for big keys\n"
+"  --eval <file>    Send an EVAL command using the Lua script at <file>\n"
 "  --help           Output this help and exit\n"
 "  --version        Output version and exit\n"
 "\n"
@@ -1009,7 +1010,7 @@ static void pipeMode(void) {
             /* Read from socket and feed the hiredis reader. */
             do {
                 nread = read(fd,ibuf,sizeof(ibuf));
-                if (nread == -1 && errno != EAGAIN) {
+                if (nread == -1 && errno != EAGAIN && errno != EINTR) {
                     fprintf(stderr, "Error reading from the server: %s\n",
                         strerror(errno));
                     exit(1);
@@ -1052,9 +1053,13 @@ static void pipeMode(void) {
                     ssize_t nwritten = write(fd,obuf+obuf_pos,obuf_len);
                     
                     if (nwritten == -1) {
-                        fprintf(stderr, "Error writing to the server: %s\n",
-                            strerror(errno));
-                        exit(1);
+                        if (errno != EAGAIN && errno != EINTR) {
+                            fprintf(stderr, "Error writing to the server: %s\n",
+                                strerror(errno));
+                            exit(1);
+                        } else {
+                            nwritten = 0;
+                        }
                     }
                     obuf_len -= nwritten;
                     obuf_pos += nwritten;
@@ -1228,7 +1233,7 @@ int main(int argc, char **argv) {
 
     /* Pipe mode */
     if (config.pipe_mode) {
-        cliConnect(0);
+        if (cliConnect(0) == REDIS_ERR) exit(1);
         pipeMode();
     }
 
